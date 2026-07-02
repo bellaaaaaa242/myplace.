@@ -1,0 +1,171 @@
+import { useState, useEffect } from 'react';
+import { supabase } from './lib/supabase';
+import type { HomeworkItem, ScheduleEvent, WishlistItem, Transaction, MoodEntry, JournalEntry, SelfCareTask, Goal } from './lib/supabase';
+import Dashboard from './pages/Dashboard';
+import HomeworkPage from './pages/HomeworkPage';
+import SchedulePage from './pages/SchedulePage';
+import WishlistPage from './pages/WishlistPage';
+import BudgetPage from './pages/BudgetPage';
+import MoodPage from './pages/MoodPage';
+import JournalPage from './pages/JournalPage';
+import SelfCarePage from './pages/SelfCarePage';
+import GoalsPage from './pages/GoalsPage';
+import Nav from './components/Nav';
+import LoginScreen from './components/LoginScreen';
+
+export type Page = 'dashboard' | 'homework' | 'schedule' | 'wishlist' | 'budget' | 'mood' | 'journal' | 'selfcare' | 'goals';
+
+export type AppData = {
+  homework: HomeworkItem[];
+  events: ScheduleEvent[];
+  wishlist: WishlistItem[];
+  transactions: Transaction[];
+  moods: MoodEntry[];
+  journal: JournalEntry[];
+  selfCare: SelfCareTask[];
+  goals: Goal[];
+};
+
+function App() {
+  const [page, setPage] = useState<Page>('dashboard');
+  const [authed, setAuthed] = useState(false);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [correctHash, setCorrectHash] = useState('');
+  const [data, setData] = useState<AppData>({
+    homework: [],
+    events: [],
+    wishlist: [],
+    transactions: [],
+    moods: [],
+    journal: [],
+    selfCare: [],
+    goals: [],
+  });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    initAuth();
+  }, []);
+
+  async function initAuth() {
+    // Load the stored hash from DB
+    const { data: settings } = await supabase.from('app_settings').select('password_hash').eq('id', 1).maybeSingle();
+    const hash = settings?.password_hash ?? '';
+    setCorrectHash(hash);
+
+    // Check if this session is already authenticated
+    const stored = sessionStorage.getItem('bella_auth');
+    if (stored && stored === hash) {
+      setAuthed(true);
+      setAuthChecking(false);
+      loadAll();
+    } else {
+      setAuthChecking(false);
+      setLoading(false);
+    }
+  }
+
+  async function loadAll() {
+    setLoading(true);
+    const today = new Date().toISOString().split('T')[0];
+
+    const [hw, ev, wi, tr, mo, jo, sc, go] = await Promise.all([
+      supabase.from('homework').select('*').order('due_date', { ascending: true }),
+      supabase.from('schedule_events').select('*').order('event_date', { ascending: true }),
+      supabase.from('wishlist_items').select('*').order('created_at', { ascending: false }),
+      supabase.from('transactions').select('*').order('transaction_date', { ascending: false }),
+      supabase.from('mood_entries').select('*').order('entry_date', { ascending: false }),
+      supabase.from('journal_entries').select('*').order('entry_date', { ascending: false }),
+      supabase.from('self_care_tasks').select('*').order('created_at', { ascending: true }),
+      supabase.from('goals').select('*').order('created_at', { ascending: false }),
+    ]);
+
+    const scData = (sc.data ?? []) as SelfCareTask[];
+    const toReset = scData.filter(t => t.last_reset < today && t.completed_today);
+    if (toReset.length > 0) {
+      await Promise.all(
+        toReset.map(t => supabase.from('self_care_tasks').update({ completed_today: false, last_reset: today }).eq('id', t.id))
+      );
+      const refreshed = await supabase.from('self_care_tasks').select('*').order('created_at', { ascending: true });
+      setData(prev => ({
+        ...prev,
+        homework: (hw.data ?? []) as HomeworkItem[],
+        events: (ev.data ?? []) as ScheduleEvent[],
+        wishlist: (wi.data ?? []) as WishlistItem[],
+        transactions: (tr.data ?? []) as Transaction[],
+        moods: (mo.data ?? []) as MoodEntry[],
+        journal: (jo.data ?? []) as JournalEntry[],
+        selfCare: (refreshed.data ?? []) as SelfCareTask[],
+        goals: (go.data ?? []) as Goal[],
+      }));
+    } else {
+      setData({
+        homework: (hw.data ?? []) as HomeworkItem[],
+        events: (ev.data ?? []) as ScheduleEvent[],
+        wishlist: (wi.data ?? []) as WishlistItem[],
+        transactions: (tr.data ?? []) as Transaction[],
+        moods: (mo.data ?? []) as MoodEntry[],
+        journal: (jo.data ?? []) as JournalEntry[],
+        selfCare: scData,
+        goals: (go.data ?? []) as Goal[],
+      });
+    }
+    setLoading(false);
+  }
+
+  const refresh = () => loadAll();
+
+  function handleLoginSuccess() {
+    setAuthed(true);
+    loadAll();
+  }
+
+  // Still verifying session
+  if (authChecking) {
+    return (
+      <div className="min-h-screen bg-rose-50 flex items-center justify-center">
+        <div className="w-10 h-10 border-4 border-rose-300 border-t-rose-500 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  // Not logged in
+  if (!authed) {
+    return <LoginScreen onSuccess={handleLoginSuccess} correctHash={correctHash} />;
+  }
+
+  // Loading data after login
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-rose-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-rose-300 border-t-rose-500 rounded-full animate-spin mx-auto mb-4" />
+          <p className="text-rose-400 font-medium text-lg">Loading your world...</p>
+        </div>
+      </div>
+    );
+  }
+
+  const pages: Record<Page, React.ReactNode> = {
+    dashboard: <Dashboard data={data} setPage={setPage} refresh={refresh} />,
+    homework: <HomeworkPage items={data.homework} refresh={refresh} />,
+    schedule: <SchedulePage events={data.events} refresh={refresh} />,
+    wishlist: <WishlistPage items={data.wishlist} refresh={refresh} />,
+    budget: <BudgetPage transactions={data.transactions} refresh={refresh} />,
+    mood: <MoodPage entries={data.moods} refresh={refresh} />,
+    journal: <JournalPage entries={data.journal} refresh={refresh} />,
+    selfcare: <SelfCarePage tasks={data.selfCare} refresh={refresh} />,
+    goals: <GoalsPage goals={data.goals} refresh={refresh} />,
+  };
+
+  return (
+    <div className="min-h-screen bg-rose-50 font-sans">
+      <Nav page={page} setPage={setPage} />
+      <main className="pb-24 md:pb-8 md:pl-64">
+        {pages[page]}
+      </main>
+    </div>
+  );
+}
+
+export default App;
